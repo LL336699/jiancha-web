@@ -3,10 +3,27 @@
     <el-alert type="info" :closable="false" show-icon style="margin-bottom: 12px">
       <template #title>舞弊举报箱（企业版口径）</template>
       <div>
-        举报提交后系统返回 16 位回执码，<b>仅此一次显示，请妥善保存</b>，凭回执码可随时查询办理进度、补充材料。
+        举报提交后系统返回 16 位回执码，<b>仅此一次显示，请妥善保存</b>，凭回执码可随时查询办理进度、补充材料、与受理人双向留言并对办理结果评价满意度。
         您的身份信息（如实名举报）经加密存储，仅限授权人员在办案时解密查看；提交 IP 仅用于频率限制，不用于其他用途。
+        <div v-if="standalone" style="margin-top: 4px">当前为独立举报箱页面（免登录）。</div>
       </div>
     </el-alert>
+
+    <!-- ═══ 举报须知（段16） ═══ -->
+    <el-card shadow="never" style="margin-bottom: 12px">
+      <el-collapse>
+        <el-collapse-item title="举报须知（受理范围 / 保密承诺 / 办理时限 / 留言与评价说明）">
+          <div class="notice-body">
+            <p><b>一、受理范围：</b>采购回扣、串标围标、虚报冒领、吃拿卡要、利益冲突及其他违反公司廉洁纪律的行为。请尽量写明时间、地点、人员、经过、涉及金额等要素，线索越具体越利于查证。</p>
+            <p><b>二、保密承诺：</b>支持完全匿名举报。匿名举报不记录任何身份信息；实名举报的姓名、电话、身份证号经加密存储，仅限授权办案人员按权限解密查看，全程审计留痕。提交 IP 仅用于频率限制，不落库、不用于身份识别。</p>
+            <p><b>三、办理时限：</b>举报受理后，系统按办理时限规则起算并自动亮黄灯/红灯预警；您可凭回执码随时查看当前办理状态。超期件将纳入督办清单并自动催办。</p>
+            <p><b>四、双向留言：</b>提交后您可凭回执码与受理人双向留言补充线索或询问进度（已办结件通道关闭）；留言不落真名、不记 IP。受理人的回复在您下次打开留言页时可见。</p>
+            <p><b>五、满意度评价：</b>办理结果反馈后，您可对本次办理进行 1-5 星满意度评价并可覆盖更新；评价结果用于对办理质量的复核与考核。</p>
+            <p><b>六、温馨提示：</b>请实事求是、不得捏造事实诬告陷害他人；对借举报之名捏造事实的，将依法追究责任。</p>
+          </div>
+        </el-collapse-item>
+      </el-collapse>
+    </el-card>
 
     <el-row :gutter="12">
       <!-- ═══ 提交举报 ═══ -->
@@ -91,6 +108,34 @@
               </el-descriptions-item>
             </el-descriptions>
             <div style="margin-top: 6px; color: #909399; font-size: 12px;">为保护调查，办理过程明细不对外展示。</div>
+
+            <!-- ═══ 双向留言（段16） ═══ -->
+            <el-divider content-position="left">双向留言</el-divider>
+            <div class="msg-list" v-if="msgList.length > 0">
+              <div v-for="m in msgList" :key="m.messageId" class="msg-item" :class="m.sender === 'reporter' ? 'msg-mine' : 'msg-theirs'">
+                <div class="msg-meta">{{ m.sender === 'reporter' ? '我' : (m.senderName || '受理人') }} · {{ m.createTime }}</div>
+                <div class="msg-bubble">{{ m.content }}</div>
+              </div>
+            </div>
+            <el-empty v-else description="暂无留言，可向受理人补充说明或询问进度" :image-size="60" />
+            <div style="display: flex; gap: 8px; margin-top: 8px">
+              <el-input v-model="msgInput" type="textarea" :rows="2" maxlength="2000" show-word-limit
+                        placeholder="输入留言（不落真名、不记 IP），Ctrl+Enter 发送" @keydown.ctrl.enter="sendMessage" />
+              <el-button type="primary" :loading="msgSending" :disabled="!msgInput || msgClosed" @click="sendMessage">发送</el-button>
+            </div>
+            <div v-if="msgClosed" style="color: #909399; font-size: 12px; margin-top: 4px;">该举报已办结，留言通道已关闭。</div>
+
+            <!-- ═══ 满意度评价（段16：反馈后开放） ═══ -->
+            <template v-if="canRate">
+              <el-divider content-position="left">满意度评价</el-divider>
+              <div v-if="receiptResult.satisfaction" style="margin-bottom: 6px">
+                <el-rate :model-value="receiptResult.satisfaction" disabled />
+                <span style="color: #909399; font-size: 12px; margin-left: 8px">已于 {{ receiptResult.satisfactionTime }} 评价，可重新评分覆盖</span>
+              </div>
+              <el-rate v-model="rateStars" show-text :texts="['很不满', '不满', '一般', '满意', '非常满意']" style="margin-bottom: 8px" />
+              <el-input v-model="rateComment" type="textarea" :rows="2" maxlength="500" show-word-limit placeholder="评价说明（选填）" />
+              <el-button type="primary" style="margin-top: 8px" :loading="rating" :disabled="!rateStars" @click="submitRate">提交评价</el-button>
+            </template>
           </div>
         </el-card>
 
@@ -130,12 +175,29 @@
 </template>
 
 <script setup name="PetitionBox">
-import { submitPetition, queryByReceipt, appendMaterial } from "@/api/jiancha/petition"
+import { submitPetition, queryByReceipt, appendMaterial, postMessageByReceipt, listMessagesByReceipt, rateByReceipt, getPublicDicts } from "@/api/jiancha/petition"
 import { getCodeImg } from "@/api/login"
 
 const { proxy } = getCurrentInstance()
-const { jc_petition_category, jc_petition_channel, jc_petition_status, jc_warn_level } =
-  useDict("jc_petition_category", "jc_petition_channel", "jc_petition_status", "jc_warn_level")
+// 段16：字典统一走公开端点（独立免登录页无法用鉴权字典接口，管理端入口也复用同一数据源）
+const jc_petition_category = ref([])
+const jc_petition_channel = ref([])
+const jc_petition_status = ref([])
+const jc_warn_level = ref([])
+
+function loadPublicDicts() {
+  getPublicDicts().then(res => {
+    const d = res.data || {}
+    jc_petition_category.value = d.jc_petition_category || []
+    jc_petition_channel.value = d.jc_petition_channel || []
+    jc_petition_status.value = d.jc_petition_status || []
+    jc_warn_level.value = d.jc_warn_level || []
+  }).catch(() => {})
+}
+loadPublicDicts()
+
+// 独立免登录模式（路由 /public/box，不走系统 Layout）
+const standalone = computed(() => window.location.hash.includes("/public/box") || window.location.pathname.endsWith("/public/box"))
 
 const captchaImg = ref("")
 const captchaUuid = ref("")
@@ -240,7 +302,74 @@ function queryReceipt() {
   queryByReceipt(receiptCode.value.trim()).then(res => {
     querying.value = false
     receiptResult.value = res.data
+    loadMessages()
+    initRate()
   }).catch(() => { querying.value = false })
+}
+
+// ═══ 段16：双向留言 ═══
+const msgList = ref([])
+const msgInput = ref("")
+const msgSending = ref(false)
+
+const msgClosed = computed(() => {
+  const s = receiptResult.value && receiptResult.value.status
+  return s === "6" || s === "7"
+})
+
+// 反馈后可评价（状态 5 已反馈 / 6 已归档）
+const canRate = computed(() => {
+  const s = receiptResult.value && receiptResult.value.status
+  return s === "5" || s === "6"
+})
+
+function loadMessages() {
+  msgList.value = []
+  if (!receiptCode.value) return
+  listMessagesByReceipt(receiptCode.value.trim()).then(res => {
+    msgList.value = res.data || []
+  }).catch(() => {})
+}
+
+function sendMessage() {
+  if (!msgInput.value || !msgInput.value.trim()) {
+    proxy.$modal.msgError("请输入留言内容")
+    return
+  }
+  if (msgClosed.value) {
+    proxy.$modal.msgError("该举报已办结，留言通道已关闭")
+    return
+  }
+  msgSending.value = true
+  postMessageByReceipt(receiptCode.value.trim(), msgInput.value.trim()).then(() => {
+    msgSending.value = false
+    msgInput.value = ""
+    loadMessages()
+    proxy.$modal.msgSuccess("留言成功")
+  }).catch(() => { msgSending.value = false })
+}
+
+// ═══ 段16：满意度评价 ═══
+const rateStars = ref(0)
+const rateComment = ref("")
+const rating = ref(false)
+
+function initRate() {
+  rateStars.value = receiptResult.value && receiptResult.value.satisfaction ? receiptResult.value.satisfaction : 0
+  rateComment.value = ""
+}
+
+function submitRate() {
+  if (!rateStars.value) {
+    proxy.$modal.msgError("请先选择星级")
+    return
+  }
+  rating.value = true
+  rateByReceipt(receiptCode.value.trim(), rateStars.value, rateComment.value).then(res => {
+    rating.value = false
+    receiptResult.value = res.data
+    proxy.$modal.msgSuccess("评价成功，感谢您的反馈")
+  }).catch(() => { rating.value = false })
 }
 
 function onFileChange(file) {
@@ -293,4 +422,30 @@ refreshCaptcha()
   margin: 12px 0 16px;
   font-family: "Courier New", monospace;
 }
+/* 段16：留言对话气泡 */
+.msg-list {
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px 2px;
+  background: #fafbfc;
+  border-radius: 6px;
+}
+.msg-item { margin-bottom: 10px; }
+.msg-item.msg-mine { text-align: right; }
+.msg-item.msg-theirs { text-align: left; }
+.msg-meta { font-size: 11px; color: #909399; margin-bottom: 2px; }
+.msg-bubble {
+  display: inline-block;
+  max-width: 82%;
+  padding: 7px 11px;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-mine .msg-bubble { background: #ecf5ff; color: #303133; border: 1px solid #d9ecff; }
+.msg-theirs .msg-bubble { background: #f0f9eb; color: #303133; border: 1px solid #e1f3d8; }
+.notice-body { font-size: 13px; color: #606266; line-height: 1.9; }
+.notice-body p { margin: 0 0 6px; }
 </style>

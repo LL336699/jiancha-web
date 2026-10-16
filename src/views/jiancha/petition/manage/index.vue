@@ -65,6 +65,16 @@
       <el-col :span="1.5">
         <el-button type="info" plain icon="Position" @click="$router.push('/jiancha/petition/box')">举报箱入口</el-button>
       </el-col>
+      <el-col :span="1.5">
+        <el-button type="warning" plain icon="Download" @click="handleExport" v-hasPermi="['jiancha:petition:list']">导出清单</el-button>
+      </el-col>
+      <el-col :span="1.5">
+        <el-radio-group v-model="mergedFilter" size="default" @change="handleQuery">
+          <el-radio-button value="">全部</el-radio-button>
+          <el-radio-button value="0">独立件</el-radio-button>
+          <el-radio-button value="1">已并案</el-radio-button>
+        </el-radio-group>
+      </el-col>
       <right-toolbar v-model:showSearch="showSearch" @queryTable="getList" />
     </el-row>
 
@@ -91,6 +101,9 @@
       <el-table-column label="状态" align="center" prop="status" width="100">
         <template #default="scope">
           <dict-tag :options="jc_petition_status" :value="scope.row.status" />
+          <el-tooltip v-if="scope.row.mergedInto" :content="'已并入主件 #' + scope.row.mergedInto + '：' + (scope.row.mergedTitle || '')" placement="top">
+            <el-tag type="info" size="small" style="margin-top: 2px">并入 #{{ scope.row.mergedInto }}</el-tag>
+          </el-tooltip>
         </template>
       </el-table-column>
       <el-table-column label="办理截止" align="center" prop="handleDeadline" width="150" />
@@ -100,10 +113,30 @@
           <span v-else style="color:#c0c4cc">正常</span>
         </template>
       </el-table-column>
+      <el-table-column label="满意度" align="center" prop="satisfaction" width="110">
+        <template #default="scope">
+          <el-rate v-if="scope.row.satisfaction" :model-value="scope.row.satisfaction" disabled size="small" />
+          <span v-else style="color:#c0c4cc">未评</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="催办" align="center" prop="urgeCount" width="70">
+        <template #default="scope">
+          <el-tag v-if="scope.row.urgeCount > 0" type="danger" size="small">{{ scope.row.urgeCount }}次</el-tag>
+          <span v-else style="color:#c0c4cc">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="提交时间" align="center" prop="createTime" width="150" />
-      <el-table-column label="操作" width="230" align="center" fixed="right" class-name="small-padding fixed-width">
+      <el-table-column label="操作" width="300" align="center" fixed="right" class-name="small-padding fixed-width">
         <template #default="scope">
           <el-button link type="primary" icon="View" @click="handleDetail(scope.row)" v-hasPermi="['jiancha:petition:query']">详情</el-button>
+          <el-button link type="primary" icon="ChatDotRound" @click="openMessage(scope.row)" v-hasPermi="['jiancha:petition:query']">
+            留言<el-badge v-if="unreadMap[scope.row.petitionId]" :value="unreadMap[scope.row.petitionId]" class="msg-badge" />
+          </el-button>
+          <el-button v-if="!scope.row.mergedInto && !['6','7'].includes(scope.row.status)" link type="warning" icon="Connection"
+                     @click="openMerge(scope.row)" v-hasPermi="['jiancha:petition:action']">并案</el-button>
+          <el-button v-if="scope.row.mergedInto" link type="info" icon="Link"
+                     @click="handleUnmerge(scope.row)" v-hasPermi="['jiancha:petition:action']">解除并案</el-button>
+          <el-button v-if="!['6','7'].includes(scope.row.status)" link type="warning" icon="Bell" @click="handleUrge(scope.row)" v-hasPermi="['jiancha:petition:urge']">催办</el-button>
           <el-button link type="primary" icon="Promotion" @click="openHandle(scope.row)" v-hasPermi="['jiancha:petition:action']">流转</el-button>
           <el-button link type="danger" icon="Delete" @click="handleDelete(scope.row)" v-hasPermi="['jiancha:petition:remove']">删除</el-button>
         </template>
@@ -141,6 +174,19 @@
         </el-descriptions-item>
         <el-descriptions-item v-if="detailPetition.feedback" label="反馈内容（举报人凭回执码可见）" :span="2">
           <div style="white-space: pre-wrap;">{{ detailPetition.feedback }}</div>
+        </el-descriptions-item>
+        <el-descriptions-item v-if="detailPetition.satisfaction" label="举报人满意度" :span="2">
+          <el-rate :model-value="detailPetition.satisfaction" disabled />
+          <span style="margin-left: 8px; color: #909399; font-size: 12px">{{ detailPetition.satisfactionTime || '' }}{{ detailPetition.satisfactionComment ? ' · ' + detailPetition.satisfactionComment : '' }}</span>
+        </el-descriptions-item>
+        <el-descriptions-item label="催办记录">
+          {{ (detailPetition.urgeCount || 0) }} 次{{ detailPetition.lastUrgeTime ? '（最近 ' + detailPetition.lastUrgeTime + '）' : '' }}
+        </el-descriptions-item>
+        <el-descriptions-item label="并案状态">
+          <template v-if="detailPetition.mergedInto">
+            已并入主件 #{{ detailPetition.mergedInto }}（{{ detailPetition.mergedTitle || '' }}）
+          </template>
+          <template v-else>独立件</template>
         </el-descriptions-item>
         <el-descriptions-item label="提交时间" :span="2">{{ detailPetition.createTime }}</el-descriptions-item>
       </el-descriptions>
@@ -204,11 +250,69 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- ═══ 双向留言抽屉（段16） ═══ -->
+    <el-drawer v-model="msgOpen" :title="'双向留言 - ID ' + (msgPetition.petitionId || '') + ' ' + (msgPetition.title || '')" size="46%">
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+        举报人凭回执码在此留言；回复内容举报人凭回执码可见。每次回复均写轨迹留痕。
+      </el-alert>
+      <div class="msg-thread" v-loading="msgLoading">
+        <div v-for="m in msgThread" :key="m.messageId" class="msg-item" :class="m.sender === 'staff' ? 'msg-mine' : 'msg-theirs'">
+          <div class="msg-meta">{{ m.sender === 'staff' ? (m.senderName || '受理人') : '举报人' }} · {{ m.createTime }}</div>
+          <div class="msg-bubble">{{ m.content }}</div>
+        </div>
+        <el-empty v-if="!msgLoading && msgThread.length === 0" description="暂无留言" :image-size="70" />
+      </div>
+      <div v-if="!['6','7'].includes(msgPetition.status)" style="display: flex; gap: 8px; margin-top: 10px">
+        <el-input v-model="msgReply" type="textarea" :rows="2" maxlength="2000" show-word-limit
+                  placeholder="回复举报人（办结后不可回复）" />
+        <el-button type="primary" :loading="msgReplying" :disabled="!msgReply" @click="submitReply">回复</el-button>
+      </div>
+      <el-alert v-else type="warning" :closable="false" style="margin-top: 10px">举报已办结，留言通道已关闭。</el-alert>
+    </el-drawer>
+
+    <!-- ═══ 并案对话框（段16） ═══ -->
+    <el-dialog title="重复举报并案" v-model="mergeOpen" width="640px" append-to-body>
+      <el-alert type="info" :closable="false" style="margin-bottom: 12px">
+        将从件并入主件统一办理：从件保留原文与轨迹并标记「已并入」，主件轨迹记收并事实；可随时解除并案。
+      </el-alert>
+      <el-descriptions :column="1" border size="small" style="margin-bottom: 12px">
+        <el-descriptions-item label="从件（当前件）">
+          #{{ mergeChild.petitionId }} {{ mergeChild.title }}
+        </el-descriptions-item>
+        <el-descriptions-item label="被举报对象">{{ mergeChild.targetName || '未指明' }}</el-descriptions-item>
+      </el-descriptions>
+      <el-form label-width="90px">
+        <el-form-item label="选择主件">
+          <el-table :data="mergeCandidateRows" size="small" border max-height="260"
+                    highlight-current-row @current-change="onMasterPick" empty-text="该对象暂无可并案的独立件">
+            <el-table-column label="ID" prop="petitionId" width="70" align="center" />
+            <el-table-column label="事由标题" prop="title" :show-overflow-tooltip="true" />
+            <el-table-column label="状态" width="90" align="center">
+              <template #default="scope">
+                <dict-tag :options="jc_petition_status" :value="scope.row.status" />
+              </template>
+            </el-table-column>
+            <el-table-column label="提交时间" prop="createTime" width="150" align="center" />
+          </el-table>
+        </el-form-item>
+        <el-form-item label="并案说明">
+          <el-input v-model="mergeRemark" type="textarea" :rows="2" maxlength="500" show-word-limit
+                    placeholder="并案理由（写入从件与主件轨迹，可留空走默认说明）" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button type="primary" :disabled="!mergeMasterId" @click="submitMerge">确认并案</el-button>
+          <el-button @click="mergeOpen = false">取 消</el-button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup name="PetitionManage">
-import { listPetition, getPetition, getPetitionTrace, getPetitionMaterial, handlePetition, delPetition, detectDuplicatePetition, petitionStat } from "@/api/jiancha/petition"
+import { listPetition, getPetition, getPetitionTrace, getPetitionMaterial, handlePetition, delPetition, detectDuplicatePetition, petitionStat, listPetitionMessage, replyPetitionMessage, petitionMessageUnread, urgePetition, mergePetition, unmergePetition, mergeCandidates, exportPetition } from "@/api/jiancha/petition"
 import { deptTreeSelect } from "@/api/system/user"
 
 const { proxy } = getCurrentInstance()
@@ -230,6 +334,23 @@ const duplicates = ref([])
 
 const handleOpen = ref(false)
 const currentPetition = ref({})
+
+// 段16：留言 / 未读 / 催办
+const unreadMap = ref({})
+const msgOpen = ref(false)
+const msgLoading = ref(false)
+const msgThread = ref([])
+const msgReply = ref("")
+const msgReplying = ref(false)
+const msgPetition = ref({})
+
+// 段16：并案 / 导出
+const mergedFilter = ref("")
+const mergeOpen = ref(false)
+const mergeChild = ref({})
+const mergeCandidateRows = ref([])
+const mergeMasterId = ref(null)
+const mergeRemark = ref("")
 
 const data = reactive({
   form: {},
@@ -290,11 +411,109 @@ function statusLabel(v) {
 
 function getList() {
   loading.value = true
-  listPetition(queryParams.value).then(response => {
+  const params = { ...queryParams.value }
+  if (mergedFilter.value !== "") {
+    params.params = { mergedFlag: mergedFilter.value }
+  }
+  listPetition(params).then(response => {
     petitionList.value = response.rows
     total.value = response.total
     loading.value = false
+    loadUnread()
   })
+}
+
+// 段16：拉取各举报的举报人留言未读数
+function loadUnread() {
+  petitionMessageUnread().then(res => { unreadMap.value = res.data || {} }).catch(() => {})
+}
+
+// 段16：打开留言抽屉（打开即把举报人留言置为已读）
+function openMessage(row) {
+  msgPetition.value = row
+  msgOpen.value = true
+  msgReply.value = ""
+  loadThread(row.petitionId)
+}
+
+function loadThread(petitionId) {
+  msgLoading.value = true
+  listPetitionMessage(petitionId).then(res => {
+    msgThread.value = res.data || []
+    msgLoading.value = false
+    if (unreadMap.value[petitionId]) {
+      delete unreadMap.value[petitionId]
+    }
+  }).catch(() => { msgLoading.value = false })
+}
+
+function submitReply() {
+  if (!msgReply.value || !msgReply.value.trim()) {
+    proxy.$modal.msgError("请输入回复内容")
+    return
+  }
+  msgReplying.value = true
+  replyPetitionMessage(msgPetition.value.petitionId, msgReply.value.trim()).then(() => {
+    msgReplying.value = false
+    msgReply.value = ""
+    loadThread(msgPetition.value.petitionId)
+    proxy.$modal.msgSuccess("回复成功")
+  }).catch(() => { msgReplying.value = false })
+}
+
+// 段16：催办（写轨迹留痕，不改变状态机）
+function handleUrge(row) {
+  proxy.$modal.prompt("填写催办意见（将写入轨迹留痕）").then(({ value }) => {
+    return urgePetition(row.petitionId, value || "")
+  }).then(() => {
+    proxy.$modal.msgSuccess("催办成功")
+    getList()
+  }).catch(() => {})
+}
+
+// 段16：并案——打开对话框并加载同对象候选
+function openMerge(row) {
+  mergeChild.value = row
+  mergeCandidates.value = []
+  mergeMasterId.value = null
+  mergeRemark.value = ""
+  mergeOpen.value = true
+  loadMergeCandidates(row.petitionId)
+}
+
+function loadMergeCandidates(petitionId) {
+  mergeCandidates(petitionId).then(res => { mergeCandidateRows.value = res.data || [] }).catch(() => {})
+}
+
+function onMasterPick(row) {
+  mergeMasterId.value = row ? row.petitionId : null
+}
+
+function submitMerge() {
+  if (!mergeMasterId.value) {
+    proxy.$modal.msgError("请先在列表中选择主件")
+    return
+  }
+  mergePetition(mergeChild.value.petitionId, mergeMasterId.value, mergeRemark.value).then(() => {
+    proxy.$modal.msgSuccess("并案成功")
+    mergeOpen.value = false
+    getList()
+  })
+}
+
+// 段16：解除并案
+function handleUnmerge(row) {
+  proxy.$modal.confirm('解除举报 #「' + row.petitionId + '」的并案，恢复独立办理？双侧轨迹均会留痕。').then(() => {
+    return unmergePetition(row.petitionId)
+  }).then(() => {
+    proxy.$modal.msgSuccess("已解除并案")
+    getList()
+  }).catch(() => {})
+}
+
+// 段16：清单导出
+function handleExport() {
+  proxy.download("jiancha/petition/export", { ...queryParams.value, pageNum: undefined, pageSize: undefined }, "舞弊举报清单.xlsx")
 }
 
 function getStat() {
@@ -401,4 +620,31 @@ getDepts()
 }
 .trace-title { font-size: 14px; color: #303133; }
 .trace-sub { font-size: 12px; color: #909399; margin-top: 2px; }
+/* 段16：留言红点 */
+.msg-badge { margin-left: 2px; vertical-align: top; }
+.msg-badge :deep(.el-badge__content) { position: static; transform: none; }
+/* 段16：留言对话线程 */
+.msg-thread {
+  max-height: calc(100vh - 320px);
+  overflow-y: auto;
+  padding: 8px;
+  background: #fafbfc;
+  border-radius: 6px;
+}
+.msg-item { margin-bottom: 12px; }
+.msg-item.msg-mine { text-align: right; }
+.msg-item.msg-theirs { text-align: left; }
+.msg-meta { font-size: 11px; color: #909399; margin-bottom: 2px; }
+.msg-bubble {
+  display: inline-block;
+  max-width: 80%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: left;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.msg-mine .msg-bubble { background: #ecf5ff; color: #303133; border: 1px solid #d9ecff; }
+.msg-theirs .msg-bubble { background: #fef0f0; color: #303133; border: 1px solid #fde2e2; }
 </style>

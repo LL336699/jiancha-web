@@ -48,6 +48,13 @@ export const constantRoutes = [
     hidden: true
   },
   {
+    // 段16：免登录独立举报箱（外部可直达，不走 Layout/鉴权；后端 /public/petition/** 匿名放行）
+    path: '/public/box',
+    component: () => import('@/views/jiancha/petition/box/index.vue'),
+    hidden: true,
+    meta: { title: '舞弊举报箱' }
+  },
+  {
     path: "/:pathMatch(.*)*",
     component: () => import('@/views/error/404'),
     hidden: true
